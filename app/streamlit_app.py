@@ -2,6 +2,7 @@
 Mock app: a simulated biosensor + your ML API.   Start (2nd terminal, API already running):
     streamlit run app/streamlit_app.py
 """
+import subprocess
 import sys
 import datetime as dt
 from pathlib import Path
@@ -43,13 +44,30 @@ def new_simulation(profile, seed, noise):
                 last_payload=None, pcos=None, error=None)
 
 
+@st.cache_resource(show_spinner="First start: building the simulated data and models (about 30 seconds)...")
+def get_local_client():
+    """Run the FastAPI app inside this process, so no separate server is needed (e.g. on Streamlit Cloud).
+    If the trained models are missing, build them first."""
+    from fastapi.testclient import TestClient
+    if not ((ROOT / "saved_models" / "surge_xgb.pkl").exists() and (ROOT / "saved_models" / "pcos_rf.pkl").exists()):
+        subprocess.run([sys.executable, str(ROOT / "scripts" / "run_pipeline.py")], cwd=ROOT, check=True)
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from api.main import app as fastapi_app
+    return TestClient(fastapi_app)
+
+
 def api_post(path, payload):
+    url = st.session_state.api_url.strip()
     try:
-        r = requests.post(st.session_state.api_url.rstrip("/") + path, json=payload, timeout=15)
+        if url.lower() in ("", "local"):
+            r = get_local_client().post(path, json=payload)
+        else:
+            r = requests.post(url.rstrip("/") + path, json=payload, timeout=15)
         r.raise_for_status()
         return r.json()
     except Exception as e:
-        st.session_state.sim["error"] = f"Could not reach the API ({e}). Is `uvicorn api.main:app` running?"
+        st.session_state.sim["error"] = f"Could not reach the API ({e}). Use 'local', or start the API with `uvicorn api.main:app`."
         return None
 
 
@@ -103,8 +121,10 @@ def cb_analyze():
 
 # ------------------------------------------------------------------ sidebar
 st.sidebar.header("Simulated user")
-st.session_state.setdefault("api_url", "http://127.0.0.1:8000")
-st.sidebar.text_input("API address", key="api_url")
+st.session_state.setdefault("api_url", "local")
+st.sidebar.text_input("API address", key="api_url", help="Type local to run the models inside the app, or an address such as http://127.0.0.1:8000")
+if st.session_state.api_url.strip().lower() in ("", "local"):
+    get_local_client()
 profile = st.sidebar.selectbox("Cycle pattern to simulate", list(PROFILES))
 noise = st.sidebar.slider("Sensor noise (kΩ)", 0.2, 1.5, 0.5, 0.1)
 seed = int(st.sidebar.number_input("Random seed", 0, 9999, 7))
