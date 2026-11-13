@@ -37,3 +37,19 @@ def latest_features(days, lh, prev_lengths, prev_last_days=None, prev_last_lh=No
     f["day_vs_prev_peak"] = days[i] - f["prev_peak_day"]
     f["day_frac_of_prev_len"] = days[i] / f["prev_len_mean"] if len(prev_lengths) else nan
     return {k: f[k] for k in FEATURES}
+
+
+def surge_events(lh, ratio=2.0, floor=12.0):
+    """Clusters of consecutive readings that are >= `ratio` x the median of the previous 7 readings
+    (and >= `floor` mIU/mL). Catches surges that a fixed 25 mIU/mL threshold misses in once-daily data.
+    Returns a list of lists of reading indices. One cluster = one clear surge; several = erratic spikes."""
+    lh = np.asarray(lh, float)
+    hits = [i for i in range(3, len(lh))
+            if lh[i] >= ratio * np.median(lh[max(0, i - 7):i]) and lh[i] >= floor]
+    events = []
+    for h in hits:
+        if events and h - events[-1][-1] <= 1:
+            events[-1].append(h)
+        else:
+            events.append([h])
+    return events

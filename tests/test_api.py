@@ -74,3 +74,19 @@ def test_bad_input_is_rejected():
     assert client.post("/analyze-pcos-risk", json={"cycles": [{"readings": short}]}).status_code == 422
     dup = [{"cycle_day": 1, "raw_impedance_kohm": 74.0}] * 2
     assert client.post("/predict-surge", json={"current_cycle": dup}).status_code == 422
+
+
+def test_phase_detection_on_simulated_cycles():
+    r = pd.read_csv(ROOT / "data/raw/readings.csv")
+    cy = pd.read_csv(ROOT / "data/raw/cycles.csv")
+    def reaches_surge_window(cid):
+        d = r[r.cycle_id == cid].sort_values("cycle_day")
+        for k in range(4, len(d) + 1):
+            out = client.post("/predict-surge", json={"current_cycle": payload(d.iloc[:k])}).json()
+            if out["phase"] == "surge_window":
+                return True
+        return False
+    normal = [reaches_surge_window(c) for c in cy[cy.kind == "normal"].cycle_id.iloc[:12]]
+    flat = [reaches_surge_window(c) for c in cy[cy.kind == "pcos_flat"].cycle_id.iloc[:12]]
+    assert np.mean(normal) >= 0.8, "should notice most real surges"
+    assert np.mean(flat) <= 0.15, "should rarely call a surge on flat cycles"

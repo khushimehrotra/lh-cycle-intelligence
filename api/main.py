@@ -17,9 +17,10 @@ from pydantic import BaseModel, Field
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from calibration import rct_to_lh, LOQ, SURGE_THRESHOLD            # noqa: E402
-from features.live_features import latest_features                  # noqa: E402
+from features.live_features import latest_features, surge_events    # noqa: E402
 from models.train_pcos import cycle_features                        # noqa: E402
 from models.risk_score import compute_risk                          # noqa: E402
+from guidance.rules import get_guidance, PHASES, GOALS              # noqa: E402
 
 DISCLAIMER = ("Research prototype trained on simulated data. Not a medical device and not a "
               "diagnosis. Discuss any concerns with a clinician.")
@@ -48,6 +49,14 @@ class SurgeRequest(BaseModel):
     previous_cycles: list[Cycle] = []
 
 
+class GuidanceRequest(BaseModel):
+    phase: str = Field("baseline", description=f"one of {PHASES}")
+    goal: str = Field("tracking", description=f"one of {GOALS}")
+    risk_band: Optional[str] = Field(None, description="low / moderate / elevated, from /analyze-pcos-risk")
+    cycle_irregular: bool = False
+    no_surge_detected: bool = False
+
+
 class PCOSRequest(BaseModel):
     cycles: list[Cycle] = Field(min_length=1, max_length=3)
 
@@ -63,6 +72,15 @@ def to_arrays(readings):
 
 def cycle_len(c: Cycle, days):
     return int(c.cycle_length or days.max())
+
+
+def infer_phase(lh, band):
+    events = surge_events(lh)
+    if lh[-1] >= SURGE_THRESHOLD or (events and events[-1][-1] == len(lh) - 1):
+        return "surge_window"
+    if events:
+        return "post_surge"
+    return "approaching_surge" if band in ("moderate", "high") else "baseline"
 
 
 def surge_band(p):
@@ -103,8 +121,9 @@ def predict_surge(req: SurgeRequest):
 
     latest = float(lh[-1])
     notes = []
-    if latest >= SURGE_THRESHOLD:
-        notes.append("Latest LH is at or above the surge threshold: a surge may already be under way.")
+    phase = infer_phase(lh, surge_band(p))
+    if phase == "surge_window":
+        notes.append("Latest reading is a clear rise above your recent baseline: a surge may be under way.")
     if latest < LOQ:
         notes.append("Latest reading is below the sensor's quantification limit (8 mIU/mL): treat as approximate.")
     if len(lh) < 4:
@@ -112,9 +131,9 @@ def predict_surge(req: SurgeRequest):
     if not prev_lengths:
         notes.append("No previous cycles supplied: forecast ignores your cycle history.")
     band = surge_band(p)
-    return {"surge_score_next_24h": round(p, 3), "band": band, "band_meaning": BAND_NOTE[band],
+    return {"surge_score_next_24h": round(p, 3), "band": band, "phase": phase, "band_meaning": BAND_NOTE[band],
             "latest_lh_est_miu_ml": round(latest, 2), "below_loq": latest < LOQ,
-            "surge_in_progress": latest >= SURGE_THRESHOLD, "notes": notes, "disclaimer": DISCLAIMER}
+            "surge_in_progress": phase == "surge_window", "notes": notes, "disclaimer": DISCLAIMER}
 
 
 @app.post("/analyze-pcos-risk")
@@ -127,13 +146,14 @@ def analyze_pcos(req: PCOSRequest):
         L = cycle_len(c, days)
         rows.append(cycle_features(lh, days, L))
         lengths.append(L)
-        has_surge = bool(lh.max() >= SURGE_THRESHOLD)
+        n_events = len(surge_events(lh))
+        has_surge = n_events == 1
         surge_flags.append(has_surge)
         summaries.append({"cycle": n, "length_days": L, "n_readings": len(lh),
                           "baseline_lh_median": round(float(np.median(lh)), 1),
                           "peak_lh": round(float(lh.max()), 1),
                           "peak_to_baseline": round(float(lh.max() / np.median(lh)), 2),
-                          "surge_detected": has_surge})
+                          "surge_detected": has_surge, "separate_spikes": n_events})
     X = pd.DataFrame(rows)[pcos_bundle["features"]]
     probs = pcos_bundle["model"].predict_proba(X)[:, 1]
     p = float(np.mean(probs))
@@ -142,6 +162,8 @@ def analyze_pcos(req: PCOSRequest):
     msg = []
     if not any(surge_flags):
         msg.append("No clear LH surge detected in the supplied cycle(s).")
+    if any(x["separate_spikes"] >= 2 for x in summaries):
+        msg.append("Several separate LH spikes without one clear surge in at least one cycle.")
     if max(lengths) > 35 or min(lengths) < 21:
         msg.append("At least one cycle length is outside the typical 21-35 day range.")
     if np.median([s["baseline_lh_median"] for s in summaries]) > 12:
@@ -154,4 +176,15 @@ def analyze_pcos(req: PCOSRequest):
             "per_cycle_probability": [round(float(x), 3) for x in probs],
             "risk_score": risk["score"], "risk_band": risk["band"], "risk_components": risk["components"],
             "pattern_summary": msg, "cycles": summaries,
+            "no_surge_detected": not any(surge_flags),
+            "cycle_irregular": risk["components"]["irregularity"] >= 0.5,
             "disclaimer": DISCLAIMER + " A PCOS diagnosis needs clinical criteria beyond LH."}
+
+
+@app.post("/guidance")
+def guidance(req: GuidanceRequest):
+    """Lifestyle & nutrition tips from cycle phase, goal and pattern flags (not from an LH number)."""
+    try:
+        return get_guidance(req.phase, req.goal, req.risk_band, req.cycle_irregular, req.no_surge_detected)
+    except ValueError as e:
+        raise HTTPException(422, str(e))

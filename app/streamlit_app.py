@@ -108,6 +108,9 @@ st.sidebar.text_input("API address", key="api_url")
 profile = st.sidebar.selectbox("Cycle pattern to simulate", list(PROFILES))
 noise = st.sidebar.slider("Sensor noise (kΩ)", 0.2, 1.5, 0.5, 0.1)
 seed = int(st.sidebar.number_input("Random seed", 0, 9999, 7))
+GOAL_LABELS = {"Just tracking my cycle": "tracking", "Trying to conceive": "trying_to_conceive",
+               "Avoiding pregnancy": "avoiding_pregnancy"}
+goal_label = st.sidebar.selectbox("My goal", list(GOAL_LABELS))
 debug = st.sidebar.checkbox("Show hidden true LH (debug)")
 if st.sidebar.button("Start new simulated user") or "sim" not in st.session_state \
         or st.session_state.sim["key"] != (profile, seed, noise):
@@ -124,7 +127,7 @@ c3.button("Skip a day (missed reading)", on_click=cb_skip, key="skip_btn")
 if s["error"]:
     st.error(s["error"])
 
-tab1, tab2 = st.tabs(["Today & surge forecast", "PCOS pattern & risk"])
+tab1, tab2, tab3 = st.tabs(["Today & surge forecast", "PCOS pattern & risk", "Lifestyle & nutrition tips"])
 
 with tab1:
     last = s["scores"][-1] if s["scores"] else None
@@ -135,7 +138,7 @@ with tab1:
     m4.metric("Level", last["band"].upper() if last else "-")
     if last:
         if last["surge_in_progress"]:
-            st.success("🌟 LH is at or above the surge threshold: a surge may be under way.")
+            st.success("🌟 Latest reading is a clear rise above your usual baseline: a surge may be under way.")
         elif last["band"] == "high":
             st.info("Elevated chance of a surge within about 24 h.")
         st.caption(last["band_meaning"])
@@ -151,9 +154,11 @@ with tab1:
         df = pd.DataFrame(s["scores"])
         a1.plot(df.cycle_day, df.latest_lh_est_miu_ml, "-o", ms=4, label="LH from sensor")
         a2.bar(df.cycle_day, df.surge_score_next_24h, color="tab:orange")
-    a1.axhline(SURGE_T, color="grey", ls=":", lw=1); a1.text(0.5, SURGE_T + 0.5, "surge threshold (25)", fontsize=8)
+    a1.axhline(SURGE_T, color="grey", ls=":", lw=1); a1.text(0.5, SURGE_T + 0.5, "reference level (25)", fontsize=8)
     a1.axhline(LOQ, color="red", ls=":", lw=1); a1.text(0.5, LOQ + 0.5, "quantification limit (8)", fontsize=8, color="red")
-    a1.set_ylabel("LH (mIU/mL)"); a1.legend(loc="upper left", fontsize=8)
+    a1.set_ylabel("LH (mIU/mL)")
+    if s["scores"] or debug:
+        a1.legend(loc="upper left", fontsize=8)
     a2.axhline(0.3, color="grey", ls=":", lw=1); a2.axhline(0.6, color="grey", ls=":", lw=1)
     a2.set_ylim(0, 1); a2.set_ylabel("surge score"); a2.set_xlabel("cycle day")
     a2.set_xlim(0, max(30, s["day"] + 2))
@@ -182,3 +187,31 @@ with tab2:
         with st.expander("How the score is built"):
             st.json(r["risk_components"])
         st.caption(r["disclaimer"])
+
+
+with tab3:
+    last = s["scores"][-1] if s["scores"] else None
+    pc = s["pcos"] or {}
+    g = api_post("/guidance", {"phase": last["phase"] if last else "baseline",
+                               "goal": GOAL_LABELS[goal_label],
+                               "risk_band": pc.get("risk_band"),
+                               "cycle_irregular": bool(pc.get("cycle_irregular", False)),
+                               "no_surge_detected": bool(pc.get("no_surge_detected", False))})
+    if g:
+        st.subheader(g["headline"])
+        st.info("**What food can and can't do:** " + g["basis"])
+        if not s["pcos"]:
+            st.caption("Run **Analyze cycles** in the PCOS tab to add pattern-based tips.")
+        for cat in dict.fromkeys(i["category"] for i in g["items"]):
+            st.markdown(f"#### {cat}")
+            for i in [x for x in g["items"] if x["category"] == cat]:
+                src = f" · source: {i['source']}" if i["source"] else ""
+                st.markdown(f"**{i['title']}**  \n{i['text']}")
+                st.caption(f"Evidence: {i['evidence_label']}{src}")
+        with st.expander("When to see a clinician"):
+            for line in g["when_to_seek_care"]:
+                st.write("• " + line)
+        with st.expander("Sources"):
+            for src in g["sources"]:
+                st.markdown(f"- [{src['title']}]({src['url']})")
+        st.caption(g["disclaimer"])
