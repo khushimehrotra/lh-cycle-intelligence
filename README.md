@@ -11,7 +11,7 @@ An end-to-end machine-learning prototype for **point-of-care luteinizing hormone
 
 ## Why this project
 
-A published electrochemical biosensor (see [Reference](#reference)) can measure LH quickly at the point of care, but a raw sensor reading is not useful to a person on its own. This project builds the **software layer** that would sit behind such a device: calibration, forecasting, pattern detection, an API and an app, so that the hardware can be plugged in later using a defined JSON format.
+A published electrochemical biosensor can measure LH quickly at the point of care, but a raw sensor reading is not useful to a person on its own. This project builds the **software layer** that would sit behind such a device: calibration, forecasting, pattern detection, an API and an app, so that the hardware can be plugged in later using a defined JSON format.
 
 ## Demo
 
@@ -57,7 +57,7 @@ Default settings (`seed 42`, `--overlap 0.7`), evaluated on **held-out simulated
 ## Quickstart
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/lh-cycle-intelligence.git
+git clone https://github.com/khushimehrotra/lh-cycle-intelligence.git
 cd lh-cycle-intelligence
 python -m venv venv
 venv\Scripts\activate            # Windows   (Mac/Linux: source venv/bin/activate)
